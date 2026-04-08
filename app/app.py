@@ -27,6 +27,7 @@ HEARTBEAT_TIMEOUT = int(os.environ.get("HEARTBEAT_TIMEOUT", "300"))
 HLS_TIME = max(1.0, float(os.environ.get("HLS_TIME", "2")))
 HLS_LIST_SIZE = max(3, int(os.environ.get("HLS_LIST_SIZE", "6")))
 STARTUP_SEGMENTS = max(1, int(os.environ.get("STARTUP_SEGMENTS", "2")))
+DEBUG_LOG = os.environ.get("DEBUG_LOG", "0") == "1"
 
 os.makedirs(HLS_DIR, exist_ok=True)
 os.makedirs(STATE_DIR, exist_ok=True)
@@ -162,14 +163,16 @@ def start_ffmpeg_if_needed():
             return {"started": False, "pid": pid, "message": "already running"}
 
         cleanup_hls()
-
-        log_path = os.path.join(STATE_DIR, "ffmpeg.log")
-        logf = open(log_path, "ab", buffering=0)
+        if DEBUG_LOG:
+            log_path = os.path.join(STATE_DIR, "ffmpeg.log")
+            ffmpeg_stdout = open(log_path, "ab", buffering=0)
+        else:
+            ffmpeg_stdout = subprocess.DEVNULL
 
         proc = subprocess.Popen(
             ffmpeg_command(),
-            stdout=logf,
-            stderr=logf,
+            stdout=ffmpeg_stdout,
+            stderr=ffmpeg_stdout,
             preexec_fn=os.setsid,
         )
         write_pid(proc.pid)

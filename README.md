@@ -17,7 +17,7 @@
 - `app/templates/camera.html`: HLS.js を使った再生 UI
 - `nginx/default.conf`: `/hls/` の静的配信と `/` のリバースプロキシ
 - `hls/`: 生成される HLS セグメントの配置先（実行時）
-- `state/`: `ffmpeg.log` や `last_seen` など状態ファイル（実行時）
+- `state/`: `last_seen` など状態ファイル（実行時）
 
 ## 動作フロー（概要）
 
@@ -63,6 +63,7 @@ docker compose down
 - `CAMERA_DEVICE`: 取得元デバイス（例: `/dev/v4l/by-id/...`）
 - `CAMERA_SIZE`: 解像度（例: `640x480`）
 - `CAMERA_FPS`: フレームレート（例: `10`）
+- `DEBUG_LOG`: `1` のときだけ `state/ffmpeg.log` に ffmpeg ログを保存（既定: `0`）
 - `HLS_TIME`: HLS セグメント秒数（既定: `2`）
 - `HLS_LIST_SIZE`: プレイリストに載せるセグメント数（既定: `6`）
 - `STARTUP_SEGMENTS`: 再生開始前にそろえるセグメント数（既定: `2`）
@@ -78,6 +79,6 @@ docker compose down
 ## 注意点
 
 - `nginx/default.conf` で `192.168.0.0/16`, `10.0.0.0/8`, `172.16.0.0/12` 以外は拒否します。
-- `state/ffmpeg.log` は実行中に増加します。
+- 通常運用では ffmpeg ログは保存しません。調査時だけ `DEBUG_LOG=1` にすると `state/ffmpeg.log` に追記されます。
 - 物理環境のカメラ ID が変わる場合は `.env` の `CAMERA_DEVICE` を調整してください。
 - 起動直後のカクつきを避けるため、既定では 2 秒セグメントを生成し、2 セグメントそろってから再生を開始します。
