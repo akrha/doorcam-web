@@ -1,0 +1,34 @@
+services:
+  app:
+    build:
+      context: ./app
+    container_name: camera-app
+    restart: unless-stopped
+    expose:
+      - "5000"
+    volumes:
+      - ./hls:/app/hls
+      - ./state:/app/state
+      - /dev/v4l:/dev/v4l
+    devices:
+      - /dev/video0:/dev/video0
+    environment:
+      CAMERA_DEVICE: ${CAMERA_DEVICE}
+      CAMERA_SIZE: ${CAMERA_SIZE:-640x480}
+      CAMERA_FPS: ${CAMERA_FPS:-10}
+      HEARTBEAT_TIMEOUT: ${HEARTBEAT_TIMEOUT:-300}
+      HLS_TIME: ${HLS_TIME:-2}
+      HLS_LIST_SIZE: ${HLS_LIST_SIZE:-6}
+      STARTUP_SEGMENTS: ${STARTUP_SEGMENTS:-2}
+
+  web:
+    image: nginx:alpine
+    container_name: camera-web
+    restart: unless-stopped
+    ports:
+      - "8090:80"
+    volumes:
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./hls:/usr/share/nginx/html/hls:ro
+    depends_on:
+      - app

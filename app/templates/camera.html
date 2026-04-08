@@ -1,0 +1,473 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>来客カメラ</title>
+  <style>
+    :root {
+      --bg: #111;
+      --panel: #1c1c1c;
+      --text: #eee;
+      --muted: #bbb;
+      --yellow: #d69e2e;
+      --green: #2f855a;
+      --red: #c53030;
+      --blue: #2b6cb0;
+      --gray: #4a5568;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      padding: 16px;
+      font-family: sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+
+    .wrap {
+      max-width: 960px;
+      margin: 0 auto;
+    }
+
+    h1 {
+      font-size: 22px;
+      margin: 0 0 16px;
+    }
+
+    .status-card {
+      border-radius: 12px;
+      padding: 14px 16px;
+      margin-bottom: 16px;
+      font-size: 18px;
+      font-weight: bold;
+      color: #fff;
+    }
+
+    .status-connecting {
+      background: var(--yellow);
+    }
+
+    .status-playing {
+      background: var(--green);
+    }
+
+    .status-error {
+      background: var(--red);
+    }
+
+    .status-idle {
+      background: var(--gray);
+    }
+
+    .status-sub {
+      margin-top: 8px;
+      font-size: 14px;
+      font-weight: normal;
+      color: rgba(255,255,255,0.95);
+      line-height: 1.5;
+    }
+
+    .video-box {
+      background: #000;
+      border-radius: 12px;
+      overflow: hidden;
+      margin-bottom: 16px;
+    }
+
+    video {
+      width: 100%;
+      display: block;
+      background: #000;
+    }
+
+    .controls {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-bottom: 12px;
+    }
+
+    button {
+      padding: 12px 16px;
+      border: none;
+      border-radius: 10px;
+      font-size: 16px;
+      cursor: pointer;
+      color: #fff;
+    }
+
+    .btn-primary {
+      background: var(--blue);
+    }
+
+    .btn-stop {
+      background: var(--red);
+    }
+
+    .btn-secondary {
+      background: var(--gray);
+    }
+
+    .hint {
+      color: var(--muted);
+      font-size: 14px;
+      margin-bottom: 16px;
+      line-height: 1.6;
+    }
+
+    .debug-panel {
+      background: var(--panel);
+      border-radius: 12px;
+      padding: 12px;
+      margin-top: 12px;
+    }
+
+    .debug-panel[hidden] {
+      display: none;
+    }
+
+    pre {
+      margin: 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+      color: #ddd;
+      font-size: 13px;
+      line-height: 1.6;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>来客カメラ</h1>
+
+    <div id="statusCard" class="status-card status-idle">
+      <div id="statusTitle">待機中</div>
+      <div id="statusSub" class="status-sub">ページを開くとカメラを起動します。</div>
+    </div>
+
+    <div class="video-box">
+      <video id="video" controls autoplay muted playsinline></video>
+    </div>
+
+    <div class="controls">
+      <button id="startBtn" class="btn-primary">再接続</button>
+      <button id="stopBtn" class="btn-stop">停止</button>
+      <button id="debugBtn" class="btn-secondary">詳細を表示</button>
+    </div>
+
+    <div class="hint">
+      表示されるまで数秒かかることがあります。
+    </div>
+
+    <div id="debugPanel" class="debug-panel" hidden>
+      <pre id="debugText">読み込み中...</pre>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@1.6.15/dist/hls.min.js"></script>
+  <script>
+    const videoEl = document.getElementById('video');
+    const startBtn = document.getElementById('startBtn');
+    const stopBtn = document.getElementById('stopBtn');
+    const debugBtn = document.getElementById('debugBtn');
+    const debugPanel = document.getElementById('debugPanel');
+    const debugText = document.getElementById('debugText');
+
+    const statusCard = document.getElementById('statusCard');
+    const statusTitle = document.getElementById('statusTitle');
+    const statusSub = document.getElementById('statusSub');
+
+    const hlsUrl = '/hls/index.m3u8';
+
+    let hls = null;
+    let pingTimer = null;
+    let statusTimer = null;
+    let debugVisible = false;
+    let lastStatus = null;
+    let playbackStarted = false;
+    let starting = false;
+    let attaching = false;
+    const startupSegmentsFallback = 2;
+
+    function setUiState(state, subtext = '') {
+      statusCard.className = 'status-card';
+
+      if (state === 'connecting') {
+        statusCard.classList.add('status-connecting');
+        statusTitle.textContent = '接続中';
+      } else if (state === 'playing') {
+        statusCard.classList.add('status-playing');
+        statusTitle.textContent = '表示中';
+      } else if (state === 'error') {
+        statusCard.classList.add('status-error');
+        statusTitle.textContent = 'エラー';
+      } else {
+        statusCard.classList.add('status-idle');
+        statusTitle.textContent = '待機中';
+      }
+
+      statusSub.textContent = subtext || '';
+    }
+
+    async function fetchJson(url, options = {}) {
+      const res = await fetch(url, options);
+      if (!res.ok) {
+        throw new Error(`${url} ${res.status}`);
+      }
+      return res.json();
+    }
+
+    function destroyPlayer() {
+      playbackStarted = false;
+      attaching = false;
+
+      if (hls) {
+        hls.destroy();
+        hls = null;
+      }
+      videoEl.pause();
+      videoEl.removeAttribute('src');
+      videoEl.load();
+    }
+
+    async function tryPlayVideo() {
+      try {
+        await videoEl.play();
+        playbackStarted = true;
+        setUiState('playing', '映像を表示しています。');
+      } catch (e) {
+        console.error('play() failed', e);
+        setUiState('connecting', '映像の準備中です...');
+      }
+    }
+
+    function attachVideo() {
+      if (attaching) {
+        return;
+      }
+      attaching = true;
+
+      destroyPlayer();
+      attaching = true;
+
+      const src = hlsUrl;
+
+      if (videoEl.canPlayType('application/vnd.apple.mpegurl')) {
+        videoEl.src = src;
+        videoEl.load();
+
+        videoEl.addEventListener('loadedmetadata', async () => {
+          await tryPlayVideo();
+          attaching = false;
+        }, { once: true });
+
+        videoEl.addEventListener('canplay', async () => {
+          await tryPlayVideo();
+          attaching = false;
+        }, { once: true });
+
+        return;
+      }
+
+      if (window.Hls && Hls.isSupported()) {
+        hls = new Hls({
+          lowLatencyMode: false,
+          backBufferLength: 30,
+          liveSyncDurationCount: 2,
+          liveMaxLatencyDurationCount: 4,
+          manifestLoadingTimeOut: 10000,
+          manifestLoadingMaxRetry: 3,
+          levelLoadingTimeOut: 10000,
+          levelLoadingMaxRetry: 3,
+          fragLoadingTimeOut: 20000,
+          fragLoadingMaxRetry: 3
+        });
+
+        hls.on(Hls.Events.MEDIA_ATTACHED, function () {
+          hls.loadSource(src);
+        });
+
+        hls.on(Hls.Events.MANIFEST_PARSED, function () {
+          tryPlayVideo();
+          attaching = false;
+        });
+
+        hls.on(Hls.Events.ERROR, function (_event, data) {
+          console.error('HLS error', data);
+          attaching = false;
+          setUiState('error', '映像の読み込みに失敗しました。再接続を押してください。');
+        });
+
+        hls.attachMedia(videoEl);
+        return;
+      }
+
+      attaching = false;
+      setUiState('error', 'このブラウザでは映像を再生できません。');
+    }
+
+    async function waitUntilReady() {
+      for (let i = 0; i < 30; i++) {
+        const st = await fetchJson('/api/status');
+        lastStatus = st;
+        renderDebug(st);
+        const startupSegments = st.startup_segments || startupSegmentsFallback;
+
+        if (st.running && st.playlist_exists && (st.segment_count || 0) >= startupSegments) {
+          return true;
+        }
+
+        await new Promise(r => setTimeout(r, 500));
+      }
+      return false;
+    }
+
+    async function startCamera() {
+      if (starting) {
+        return;
+      }
+      starting = true;
+
+      setUiState('connecting', 'カメラを起動しています...');
+      try {
+        await fetchJson('/api/start', { method: 'POST' });
+
+        const ready = await waitUntilReady();
+        if (!ready) {
+          setUiState('error', '起動しましたが映像の準備ができていません。');
+          return;
+        }
+
+        attachVideo();
+      } catch (e) {
+        console.error(e);
+        setUiState('error', '起動に失敗しました。しばらくしてから再接続してください。');
+      } finally {
+        starting = false;
+      }
+    }
+
+    async function stopCamera() {
+      try {
+        await fetchJson('/api/stop', { method: 'POST' });
+      } catch (e) {
+        console.error(e);
+      }
+
+      destroyPlayer();
+      setUiState('idle', '停止しました。');
+    }
+
+    async function sendPing() {
+      try {
+        await fetchJson('/api/ping', { method: 'POST' });
+      } catch (e) {
+        console.error('ping failed', e);
+      }
+    }
+
+    function renderDebug(st) {
+      if (!st) return;
+
+      if (st.error) {
+        debugText.textContent = `error: ${st.error}`;
+        return;
+      }
+
+      debugText.textContent =
+        `running: ${st.running}\n` +
+        `playlist_exists: ${st.playlist_exists}\n` +
+        `segment_count: ${st.segment_count}\n` +
+        `hls_time: ${st.hls_time}\n` +
+        `startup_segments: ${st.startup_segments}\n` +
+        `idle_seconds: ${st.idle_seconds}\n` +
+        `timeout_seconds: ${st.timeout_seconds}\n` +
+        `last_seen: ${st.last_seen}\n` +
+        `camera_device: ${st.camera_device}\n` +
+        `playbackStarted: ${playbackStarted}\n` +
+        `video.paused: ${videoEl.paused}\n` +
+        `video.readyState: ${videoEl.readyState}\n` +
+        `starting: ${starting}\n` +
+        `attaching: ${attaching}`;
+    }
+
+    async function refreshStatus() {
+      try {
+        const st = await fetchJson('/api/status');
+        lastStatus = st;
+        renderDebug(st);
+
+        if (!st.running) {
+          if (statusTitle.textContent !== 'エラー' && statusTitle.textContent !== '待機中') {
+            setUiState('idle', '停止中です。');
+          }
+          return;
+        }
+
+        if (st.running && !st.playlist_exists) {
+          if (!playbackStarted) {
+            setUiState('connecting', 'カメラを起動しています...');
+          }
+          return;
+        }
+
+        if (st.running && st.playlist_exists) {
+          if (!playbackStarted && (st.segment_count || 0) < (st.startup_segments || startupSegmentsFallback)) {
+            setUiState('connecting', '映像を安定して再生するため先読みしています...');
+          }
+          return;
+        }
+      } catch (e) {
+        console.error(e);
+        renderDebug({ error: e.message });
+      }
+    }
+
+    debugBtn.addEventListener('click', () => {
+      debugVisible = !debugVisible;
+      debugPanel.hidden = !debugVisible;
+      debugBtn.textContent = debugVisible ? '詳細を隠す' : '詳細を表示';
+      renderDebug(lastStatus);
+    });
+
+    startBtn.addEventListener('click', () => {
+      startCamera();
+    });
+
+    stopBtn.addEventListener('click', () => {
+      stopCamera();
+    });
+
+    window.addEventListener('beforeunload', () => {
+      navigator.sendBeacon('/api/ping');
+    });
+
+    videoEl.addEventListener('playing', () => {
+      playbackStarted = true;
+      setUiState('playing', '映像を表示しています。');
+    });
+
+    videoEl.addEventListener('waiting', () => {
+      if (!playbackStarted) {
+        setUiState('connecting', '映像を読み込み中です...');
+      }
+    });
+
+    videoEl.addEventListener('error', () => {
+      setUiState('error', '映像の表示中にエラーが発生しました。');
+    });
+
+    pingTimer = setInterval(sendPing, 30000);
+    statusTimer = setInterval(refreshStatus, 5000);
+
+    setUiState('connecting', 'カメラを起動しています...');
+    startCamera();
+    refreshStatus();
+  </script>
+</body>
+</html>
