@@ -246,6 +246,38 @@
       }
     }
 
+    function shouldUseNativeHls() {
+      const canUseNativeHls = !!videoEl.canPlayType('application/vnd.apple.mpegurl');
+
+      if (!canUseNativeHls) {
+        return false;
+      }
+
+      // Prefer hls.js on Chrome/Edge where MSE is available.
+      if (window.Hls && Hls.isSupported()) {
+        return false;
+      }
+
+      return true;
+    }
+
+    function getMediaErrorDetails() {
+      const mediaError = videoEl.error;
+
+      if (!mediaError) {
+        return 'unknown';
+      }
+
+      const codeMap = {
+        1: 'MEDIA_ERR_ABORTED',
+        2: 'MEDIA_ERR_NETWORK',
+        3: 'MEDIA_ERR_DECODE',
+        4: 'MEDIA_ERR_SRC_NOT_SUPPORTED'
+      };
+
+      return `${codeMap[mediaError.code] || 'MEDIA_ERR_UNKNOWN'} (${mediaError.code})`;
+    }
+
     function attachVideo() {
       if (attaching) {
         return;
@@ -257,10 +289,7 @@
 
       const src = hlsUrl;
 
-      if (videoEl.canPlayType('application/vnd.apple.mpegurl')) {
-        videoEl.src = src;
-        videoEl.load();
-
+      if (shouldUseNativeHls()) {
         videoEl.addEventListener('loadedmetadata', async () => {
           await tryPlayVideo();
           attaching = false;
@@ -270,6 +299,9 @@
           await tryPlayVideo();
           attaching = false;
         }, { once: true });
+
+        videoEl.src = src;
+        videoEl.load();
 
         return;
       }
@@ -299,7 +331,25 @@
 
         hls.on(Hls.Events.ERROR, function (_event, data) {
           console.error('HLS error', data);
+
+          if (!data.fatal) {
+            return;
+          }
+
           attaching = false;
+
+          if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+            hls.startLoad();
+            setUiState('connecting', '映像を再接続しています...');
+            return;
+          }
+
+          if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+            hls.recoverMediaError();
+            setUiState('connecting', '映像を復旧しています...');
+            return;
+          }
+
           setUiState('error', '映像の読み込みに失敗しました。再接続を押してください。');
         });
 
@@ -459,6 +509,8 @@
     });
 
     videoEl.addEventListener('error', () => {
+      console.error('video error', getMediaErrorDetails(), videoEl.currentSrc);
+      destroyPlayer();
       setUiState('error', '映像の表示中にエラーが発生しました。');
     });
 
