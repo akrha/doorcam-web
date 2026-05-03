@@ -81,4 +81,7 @@ docker compose down
 - `nginx/default.conf` で `192.168.0.0/16`, `10.0.0.0/8`, `172.16.0.0/12` 以外は拒否します。
 - 通常運用では ffmpeg ログは保存しません。調査時だけ `DEBUG_LOG=1` にすると `state/ffmpeg.log` に追記されます。
 - 物理環境のカメラ ID が変わる場合は `.env` の `CAMERA_DEVICE` を調整してください。
+- `CAMERA_DEVICE` に `/dev/v4l/by-id/...` を使う場合、実体は `/dev/videoN` へのシンボリックリンクです。コンテナ内でもその実体が見える必要があるため、`/dev` 全体をマウントしています。
+- この構成は、ホストに接続される V4L デバイスが最小限である前提の運用を想定しています。
+- あわせて Docker の device cgroup でも Video4Linux デバイス（major `81`）を許可しています。見えていても `Operation not permitted` になる場合はこの設定を確認してください。
 - 起動直後のカクつきを避けるため、既定では 2 秒セグメントを生成し、2 セグメントそろってから再生を開始します。

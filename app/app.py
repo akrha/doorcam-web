@@ -16,6 +16,8 @@ STATE_DIR = os.path.join(BASE_DIR, "state")
 LAST_SEEN_FILE = os.path.join(STATE_DIR, "last_seen")
 PID_FILE = os.path.join(STATE_DIR, "ffmpeg.pid")
 LOCK_FILE = os.path.join(STATE_DIR, "lock")
+LAST_ERROR_FILE = os.path.join(STATE_DIR, "last_error.txt")
+FFMPEG_LOG_FILE = os.path.join(STATE_DIR, "ffmpeg.log")
 
 CAMERA_DEVICE = os.environ.get(
     "CAMERA_DEVICE",
@@ -66,6 +68,28 @@ def remove_pid():
         os.remove(PID_FILE)
     except FileNotFoundError:
         pass
+
+
+def clear_last_error():
+    try:
+        os.remove(LAST_ERROR_FILE)
+    except FileNotFoundError:
+        pass
+
+
+def write_last_error(message):
+    with open(LAST_ERROR_FILE, "w") as f:
+        f.write(message.strip())
+
+
+def read_last_error():
+    if not os.path.exists(LAST_ERROR_FILE):
+        return None
+    try:
+        with open(LAST_ERROR_FILE, "r") as f:
+            return f.read().strip() or None
+    except Exception:
+        return None
 
 
 def is_pid_alive(pid):
@@ -154,6 +178,31 @@ def get_playlist_segment_count():
         return 0
 
 
+def camera_device_diagnostics():
+    resolved = os.path.realpath(CAMERA_DEVICE)
+    resolved_is_distinct = resolved != CAMERA_DEVICE
+
+    return {
+        "camera_device_exists": os.path.exists(CAMERA_DEVICE),
+        "camera_device_realpath": resolved if resolved_is_distinct else None,
+        "camera_device_realpath_exists": os.path.exists(resolved) if resolved_is_distinct else None,
+    }
+
+
+def read_ffmpeg_log_tail(max_bytes=4000):
+    if not os.path.exists(FFMPEG_LOG_FILE):
+        return None
+
+    try:
+        with open(FFMPEG_LOG_FILE, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            f.seek(max(0, size - max_bytes))
+            return f.read().decode("utf-8", errors="replace").strip() or None
+    except Exception:
+        return None
+
+
 def start_ffmpeg_if_needed():
     fd = lock_fd()
     try:
@@ -163,11 +212,18 @@ def start_ffmpeg_if_needed():
             return {"started": False, "pid": pid, "message": "already running"}
 
         cleanup_hls()
-        if DEBUG_LOG:
-            log_path = os.path.join(STATE_DIR, "ffmpeg.log")
-            ffmpeg_stdout = open(log_path, "ab", buffering=0)
-        else:
-            ffmpeg_stdout = subprocess.DEVNULL
+        clear_last_error()
+
+        if not os.path.exists(CAMERA_DEVICE):
+            remove_pid()
+            diag = camera_device_diagnostics()
+            message = f"camera device not found: {CAMERA_DEVICE}"
+            if diag["camera_device_realpath"]:
+                message += f" -> {diag['camera_device_realpath']}"
+            write_last_error(message)
+            return {"started": False, "pid": None, "message": message}
+
+        ffmpeg_stdout = open(FFMPEG_LOG_FILE, "wb", buffering=0)
 
         proc = subprocess.Popen(
             ffmpeg_command(),
@@ -175,6 +231,17 @@ def start_ffmpeg_if_needed():
             stderr=ffmpeg_stdout,
             preexec_fn=os.setsid,
         )
+        time.sleep(0.7)
+
+        if proc.poll() is not None:
+            remove_pid()
+            log_tail = read_ffmpeg_log_tail()
+            message = f"ffmpeg exited immediately with code {proc.returncode}"
+            if log_tail:
+                message = f"{message}: {log_tail.splitlines()[-1]}"
+            write_last_error(message)
+            return {"started": False, "pid": None, "message": message}
+
         write_pid(proc.pid)
         touch_last_seen()
         return {"started": True, "pid": proc.pid, "message": "started"}
@@ -232,6 +299,9 @@ def get_status():
         "camera_device": CAMERA_DEVICE,
         "hls_time": HLS_TIME,
         "startup_segments": STARTUP_SEGMENTS,
+        "last_error": read_last_error(),
+        "ffmpeg_log_available": os.path.exists(FFMPEG_LOG_FILE),
+        **camera_device_diagnostics(),
     }
 
 

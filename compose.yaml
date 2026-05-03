@@ -9,9 +9,11 @@ services:
     volumes:
       - ./hls:/app/hls
       - ./state:/app/state
-      - /dev/v4l:/dev/v4l
-    devices:
-      - /dev/video0:/dev/video0
+      # by-id symlinks resolve to /dev/videoN, so the underlying device nodes
+      # must be visible inside the container as well.
+      - /dev:/dev
+    device_cgroup_rules:
+      - "c 81:* rmw"
     environment:
       CAMERA_DEVICE: ${CAMERA_DEVICE}
       CAMERA_SIZE: ${CAMERA_SIZE:-640x480}
